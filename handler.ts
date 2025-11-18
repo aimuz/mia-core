@@ -102,6 +102,11 @@ export async function miaHandleRequest(
     const reqUrl = new URL(request.url);
     return reqUrl.host;
   })();
+  config.quiet = config.quiet ?? true;
+
+  if (!config.quiet) {
+    console.log(`mia: received request for ${request.url}`);
+  }
 
   const url = new URL(request.url);
   const pkg = matchPkg(url.pathname, config.packages);

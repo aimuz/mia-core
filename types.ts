@@ -3,6 +3,7 @@ export interface MiaConfig {
     host: string; // default: godoc.org
   };
   url?: string; // default use request host
+  quiet?: boolean; // default: true, suppress log output
   packages: VanityPackage[];
 }
 
