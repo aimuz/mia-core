@@ -1,4 +1,4 @@
-import { miaHandleRequest } from "https://raw.githubusercontent.com/aimuz/mia-core/main/mod.ts";
+import { miaHandleRequest } from "https://cdn.jsdelivr.net/gh/aimuz/mia-core/mod.ts";
 
 export default {
   async fetch(request: Request): Promise<Response> {

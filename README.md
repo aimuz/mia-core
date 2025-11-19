@@ -21,10 +21,16 @@ Import directly from GitHub:
 import { miaHandleRequest } from "https://raw.githubusercontent.com/aimuz/mia-core/main/mod.ts";
 ```
 
+Or load via jsDelivr:
+
+```ts
+import { miaHandleRequest } from "https://cdn.jsdelivr.net/gh/aimuz/mia-core/mod.ts";
+```
+
 ### Deno
 
 ```ts
-import { miaHandleRequest } from "https://raw.githubusercontent.com/aimuz/mia-core/main/mod.ts";
+import { miaHandleRequest } from "https://cdn.jsdelivr.net/gh/aimuz/mia-core/mod.ts";
 
 Deno.serve((req: Request) =>
   miaHandleRequest(req, {
@@ -47,7 +53,7 @@ deno run --allow-net --allow-env examples/deno.ts
 ### Cloudflare Workers
 
 ```ts
-import { miaHandleRequest } from "https://raw.githubusercontent.com/aimuz/mia-core/latest/mod.ts";
+import { miaHandleRequest } from "https://cdn.jsdelivr.net/gh/aimuz/mia-core/mod.ts";
 
 export default {
   async fetch(request: Request): Promise<Response> {
