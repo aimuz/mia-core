@@ -1,80 +1,108 @@
 import { MiaConfig, VanityPackage } from "./types.ts";
 
-function normalizePath(pathname: string): string {
-  // If it doesn't start with "/", prepend one
-  return pathname.startsWith("/") ? pathname : `/${pathname}`;
+function stripLeadingSlash(str: string): string {
+  let s = str;
+  while (s.startsWith("/")) {
+    s = s.slice(1);
+  }
+  return s;
 }
 
-function normalizePrefix(prefix: string): string {
-  // Prefix is usually something like "foo" / "foo/bar", normalize it to start with "/"
-  return prefix.startsWith("/") ? prefix : `/${prefix}`;
+function stripTrailingSlash(str: string): string {
+  let s = str;
+  while (s.endsWith("/")) {
+    s = s.slice(0, -1);
+  }
+  return s;
+}
+
+function trimSlashes(str: string): string {
+  return stripTrailingSlash(stripLeadingSlash(str));
+}
+
+function ensureLeadingSlash(str: string): string {
+  return str.startsWith("/") ? str : `/${str}`;
+}
+
+function stripProtocol(url: string): string {
+  if (url.startsWith("https://")) return url.slice(8);
+  if (url.startsWith("http://")) return url.slice(7);
+  return url;
 }
 
 function matchPkg(
-  rawPathname: string,
+  pathname: string,
   pkgs: VanityPackage[],
 ): VanityPackage | null {
-  const pathname = normalizePath(rawPathname);
+  // Normalize request path to ensure it starts with /
+  const normalizedPath = ensureLeadingSlash(pathname);
 
-  return (
-    pkgs.find((pkg) => {
-      const prefix = normalizePrefix(pkg.prefix);
+  return pkgs.find((pkg) => {
+    const pkgPrefix = ensureLeadingSlash(pkg.prefix);
 
-      // Exact match: /foo
-      if (pathname === prefix) return true;
+    // Exact match: /foo
+    if (normalizedPath === pkgPrefix) return true;
 
-      // Subpath match: /foo/... or /foo/bar/...
-      if (pathname.startsWith(prefix + "/")) return true;
+    // Subpath match: /foo/bar -> matches /foo/
+    // We manually check the separator to avoid matching /foobar against /foo
+    if (
+      normalizedPath.startsWith(pkgPrefix) &&
+      normalizedPath.charAt(pkgPrefix.length) === "/"
+    ) {
+      return true;
+    }
 
-      return false;
-    }) ?? null
-  );
+    return false;
+  }) ?? null;
 }
 
 function buildGoMetaHTML(
-  rawPathname: string,
-  config: MiaConfig,
+  pathname: string,
+  host: string,
+  godocHost: string,
   pkg: VanityPackage,
 ): string {
-  const pathname = normalizePath(rawPathname);
+  // 1. Calculate Import Prefix
+  // format: example.com/foo
+  const cleanHost = stripTrailingSlash(stripProtocol(host));
+  const cleanPrefix = trimSlashes(pkg.prefix);
+  const importPrefix = `${cleanHost}/${cleanPrefix}`;
 
-  // importPrefix: example.com/foo[/bar]
-  const importPrefix = `${config.url?.replace(/\/+$/, "")}/${
-    pkg.prefix.replace(/^\/+/, "")
-  }`;
-
-  // Do not modify rule itself to avoid side effects
-  const subdir = !pkg.subdir || pkg.subdir === "/"
-    ? ""
-    : pkg.subdir.replace(/^\/+/, "");
-
+  // 2. Construct Repo URL
+  const repo = stripTrailingSlash(pkg.repo);
   const vcs = pkg.vcs || "git";
 
-  // go-import: <import-prefix> <vcs> <repo> [subdir]
-  let goImport = `${importPrefix} ${vcs} ${pkg.repo}`;
-  if (subdir) {
-    goImport += ` ${subdir}`;
+  // Handle optional subdir in go-import (rare)
+  let subdir = "";
+  if (pkg.subdir && pkg.subdir !== "/") {
+    subdir = ` ${trimSlashes(pkg.subdir)}`;
   }
 
-  // go doc / pkg site URL
-  const godocHost = (config.godoc?.host ?? "godoc.org").replace(/\/+$/, "");
-  const pathForDoc = `${config.url?.replace(/\/+$/, "")}${pathname}`;
-  const godoc = `https://${godocHost}/${pathForDoc.replace(/^\/+/, "")}`;
+  // meta name="go-import"
+  const goImport = `${importPrefix} ${vcs} ${repo}${subdir}`;
 
-  // go-source
+  // 3. Construct Go Doc URL
+  // Redirect to pkg.go.dev (standard) or configured host
+  const cleanDocHost = stripTrailingSlash(stripProtocol(godocHost));
+  const godoc = `https://${cleanDocHost}/${cleanHost}${
+    ensureLeadingSlash(pathname)
+  }`;
+
+  // 4. Construct Go Source
   let goSource = pkg.goSource || "";
 
-  const repoBase = pkg.repo.replace(/\/+$/, "");
-
-  if (!goSource && repoBase.startsWith("https://bitbucket.org")) {
-    goSource =
-      `${importPrefix} ${repoBase}/src/default{/dir} ${repoBase}/src/default{/dir}/{file}#{file}-{line}`;
-  }
-
   if (!goSource) {
-    // Default GitHub format
-    goSource =
-      `${importPrefix} ${repoBase} ${repoBase}/tree/master{/dir} ${repoBase}/tree/master{/dir}/{file}#L{line}`;
+    // Generate default source patterns based on repo host
+    if (repo.includes("bitbucket.org")) {
+      goSource =
+        `${importPrefix} ${repo}/src/default{/dir} ${repo}/src/default{/dir}/{file}#{file}-{line}`;
+    } else {
+      // GitHub default (using 'main' instead of 'master' for modern repos)
+      // Note: GitHub supports both /tree/ and /blob/ for files, but standard implementation often uses tree
+      // We use standard variable expansion provided by Go tools
+      goSource =
+        `${importPrefix} ${repo} ${repo}/tree/main{/dir} ${repo}/blob/main{/dir}/{file}#L{line}`;
+    }
   }
 
   return `<!DOCTYPE html>
@@ -87,34 +115,38 @@ function buildGoMetaHTML(
   <body>
     Nothing to see here. Please <a href="${godoc}">move along</a>.
   </body>
-</html>`.trim();
+</html>`;
 }
 
-/**
- * Core handler: platform-independent, only depends on Request / Response / URL
- */
 export async function miaHandleRequest(
   request: Request,
   config: MiaConfig,
 ): Promise<Response> {
-  config.godoc = config.godoc || { host: "godoc.org" };
-  config.url = config.url || (() => {
-    const reqUrl = new URL(request.url);
-    return reqUrl.host;
-  })();
-  config.quiet = config.quiet ?? true;
+  // 1. Determine Configuration (without mutating the original config object)
+  const reqUrl = new URL(request.url);
 
-  if (!config.quiet) {
-    console.log(`mia: received request for ${request.url}`);
+  // Use configured URL or fallback to request host
+  const configHost = config.url || reqUrl.host;
+
+  // Use configured Godoc host or fallback to pkg.go.dev
+  const godocHost = config.godoc?.host || "pkg.go.dev";
+
+  const isQuiet = config.quiet ?? true;
+
+  // 2. Logging
+  if (!isQuiet) {
+    console.log(`mia: received request for ${reqUrl.pathname}`);
   }
 
-  const url = new URL(request.url);
-  const pkg = matchPkg(url.pathname, config.packages);
+  // 3. Match Package
+  const pkg = matchPkg(reqUrl.pathname, config.packages);
+
   if (!pkg) {
     return new Response("mia: no matching rule", { status: 404 });
   }
 
-  const html = buildGoMetaHTML(url.pathname, config, pkg);
+  // 4. Build Response
+  const html = buildGoMetaHTML(reqUrl.pathname, configHost, godocHost, pkg);
 
   return new Response(html, {
     status: 200,
